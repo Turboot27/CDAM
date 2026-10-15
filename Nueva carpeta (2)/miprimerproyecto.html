@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>CDAM Noticias</title>
+        <style>
+            body {
+                max-width: 720px;
+                margin: 2rem auto;
+                padding: 0 1rem;
+                font-family: Arial, sans-serif;
+                line-height: 1.5;
+            }
+
+            button {
+                padding: 8px 14px;
+                cursor: pointer;
+            }
+
+            input,
+            textarea {
+                box-sizing: border-box;
+                display: block;
+                margin: 8px 0;
+                max-width: 100%;
+                padding: 8px;
+                width: 100%;
+            }
+
+            .commentsList li {
+                margin: 8px 0;
+                overflow-wrap: anywhere;
+            }
+
+            article {
+                border-bottom: 1px solid #ccc;
+                margin: 1.5rem 0;
+                padding-bottom: 1rem;
+            }
+
+            [hidden] {
+                display: none !important;
+            }
+        </style>
+    </head>
+    <body>
+        <main id="login">
+            <h1>CDAM Noticias</h1>
+            <form id="readerLoginForm">
+                <label for="password">Ingresa la contraseña para ver las noticias</label>
+                <input id="password" type="password" autocomplete="current-password" required>
+                <button type="submit">Entrar</button>
+                <p id="readerMessage" role="alert" aria-live="polite"></p>
+            </form>
+            <h2>Acceso para publicar</h2>
+            <form id="adminLoginForm">
+                <label for="adminUsername">Usuario administrador</label>
+                <input id="adminUsername" autocomplete="username" required>
+                <label for="adminPassword">Contraseña de administrador</label>
+                <input id="adminPassword" type="password" autocomplete="current-password" required>
+                <button type="submit">Iniciar sesión</button>
+                <p id="adminLoginMessage" role="alert" aria-live="polite"></p>
+            </form>
+        </main>
+
+        <main id="news" hidden>
+            <h1>Noticia del dia</h1>
+            <p>Noticia de última hora. Hoy, <time class="currentDate"></time>, sucedieron dos cosas: la explosión de un squishy y se recogieron los libros sueltos para llevarlos a dirección.</p>
+            <section id="articles" aria-label="Noticias"></section>
+
+            <section id="adminPanel" aria-labelledby="adminHeading" hidden>
+                <h2 id="adminHeading">Agregar una noticia</h2>
+                <form id="newsForm">
+                    <label for="newsTitle">Título de la noticia</label>
+                    <input id="newsTitle" maxlength="120" required>
+                    <label for="newsBody">Contenido de la noticia</label>
+                    <textarea id="newsBody" rows="5" maxlength="3000" required></textarea>
+                    <button type="submit">Publicar noticia</button>
+                    <p id="publishMessage" role="status" aria-live="polite"></p>
+                </form>
+            </section>
+            <p id="sessionMessage" aria-live="polite"></p>
+            <button id="logoutButton" type="button">Cerrar sesión</button>
+        </main>
+
+        <script>
+            const login = document.getElementById("login");
+            const news = document.getElementById("news");
+            const adminPanel = document.getElementById("adminPanel");
+            const readerLoginForm = document.getElementById("readerLoginForm");
+            const adminLoginForm = document.getElementById("adminLoginForm");
+            const passwordInput = document.getElementById("password");
+            const formatDate = (date) => new Intl.DateTimeFormat("es-MX", {
+                day: "numeric",
+                month: "long",
+                year: "numeric"
+            }).format(date);
+
+            const articlesElement = document.getElementById("articles");
+            const api = async (url, options = {}) => {
+                const response = await fetch(url, {
+                    ...options,
+                    headers: { "Content-Type": "application/json", ...options.headers }
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || "Ocurrió un error.");
+                return result;
+            };
+
+            function showError(element, error) {
+                element.textContent = error.message;
+            }
+
+            async function loadArticles() {
+                const result = await api("/api/news");
+                renderArticles(result.articles);
+            }
+
+            function setSession(status) {
+                const authenticated = status.reader || status.admin;
+                login.hidden = authenticated;
+                news.hidden = !authenticated;
+                adminPanel.hidden = !status.admin;
+                document.getElementById("sessionMessage").textContent = status.admin
+                    ? "Sesión de administrador iniciada."
+                    : "Sesión de lector iniciada.";
+                if (authenticated) {
+                    document.querySelectorAll(".currentDate").forEach((dateElement) => {
+                        dateElement.textContent = formatDate(new Date());
+                    });
+                }
+            }
+
+            async function importLegacyArticles() {
+                if (localStorage.getItem("cdam-news-migrated") === "true") return;
+                const stored = localStorage.getItem("cdam-news-articles");
+                const oldComments = JSON.parse(localStorage.getItem("cdam-news-comments") || "[]");
+                if (!Array.isArray(oldComments) || !oldComments.every((comment) => typeof comment === "string")) {
+                    throw new Error("Los comentarios antiguos tienen un formato no válido.");
+                }
+                const legacyArticles = stored === null ? [] : JSON.parse(stored);
+                if (!Array.isArray(legacyArticles)) {
+                    throw new Error("Las noticias antiguas tienen un formato no válido.");
+                }
+                if (oldComments.length) {
+                    const squishy = legacyArticles.find((article) => article.id === "squishy");
+                    if (squishy) {
+                        squishy.comments = [...new Set([
+                            ...(Array.isArray(squishy.comments) ? squishy.comments : []),
+                            ...oldComments
+                        ])];
+                    } else {
+                        legacyArticles.push({
+                            id: "squishy",
+                            title: "Explocion de squishy",
+                            body: "Ocurrió una explosión de un squishy en la escuela. La causó un estudiante que estaba jugando con su squishy y lo explotó.",
+                            date: new Date().toISOString(),
+                            comments: oldComments
+                        });
+                    }
+                }
+                if (!legacyArticles.length) {
+                    localStorage.setItem("cdam-news-migrated", "true");
+                    return;
+                }
+                await api("/api/admin/import-legacy", {
+                    method: "POST",
+                    body: JSON.stringify({ articles: legacyArticles })
+                });
+                localStorage.setItem("cdam-news-migrated", "true");
+            }
+
+            function renderArticles(articles) {
+                articlesElement.replaceChildren();
+                articles.forEach((article) => {
+                    const card = document.createElement("article");
+                    const heading = document.createElement("h2");
+                    heading.textContent = article.title;
+                    const date = document.createElement("time");
+                    date.textContent = formatDate(new Date(article.date));
+                    const paragraph = document.createElement("p");
+                    paragraph.textContent = article.body;
+                    card.append(heading, date, paragraph);
+
+                    if (article.id === "squishy") {
+                        const likeButton = document.createElement("button");
+                        likeButton.type = "button";
+                        likeButton.setAttribute("aria-pressed", "false");
+                        likeButton.textContent = "Me gusta (0)";
+                        likeButton.addEventListener("click", () => {
+                            const liked = likeButton.getAttribute("aria-pressed") !== "true";
+                            likeButton.setAttribute("aria-pressed", String(liked));
+                            likeButton.textContent = liked ? "Te gusta (1)" : "Me gusta (0)";
+                        });
+                        card.appendChild(likeButton);
+                    }
+
+                    const comments = document.createElement("section");
+                    const commentsHeading = document.createElement("h3");
+                    commentsHeading.textContent = "Comentarios";
+                    const form = document.createElement("form");
+                    const label = document.createElement("label");
+                    const input = document.createElement("textarea");
+                    const message = document.createElement("p");
+                    const submit = document.createElement("button");
+                    const list = document.createElement("ul");
+                    input.rows = 3;
+                    input.maxLength = 500;
+                    input.required = true;
+                    message.setAttribute("role", "alert");
+                    message.setAttribute("aria-live", "polite");
+                    label.textContent = "Escribe un comentario";
+                    label.appendChild(input);
+                    submit.type = "submit";
+                    submit.textContent = "Agregar comentario";
+                    list.className = "commentsList";
+                    list.setAttribute("aria-live", "polite");
+
+                    article.comments.forEach((comment) => {
+                        const item = document.createElement("li");
+                        item.textContent = comment;
+                        list.appendChild(item);
+                    });
+
+                    form.append(label, submit);
+                    form.addEventListener("submit", async (event) => {
+                        event.preventDefault();
+                        const comment = input.value.trim();
+                        if (!comment) {
+                            input.focus();
+                            return;
+                        }
+                        submit.disabled = true;
+                        try {
+                            await api(`/api/news/${encodeURIComponent(article.id)}/comments`, {
+                                method: "POST",
+                                body: JSON.stringify({ comment })
+                            });
+                            message.textContent = "";
+                            const item = document.createElement("li");
+                            item.textContent = comment;
+                            list.appendChild(item);
+                            input.value = "";
+                            input.focus();
+                        } catch (error) {
+                            showError(message, error);
+                        } finally {
+                            submit.disabled = false;
+                        }
+                    });
+                    comments.append(commentsHeading, message, form, list);
+                    card.appendChild(comments);
+                    articlesElement.appendChild(card);
+                });
+            }
+
+            const newsForm = document.getElementById("newsForm");
+            const publishMessage = document.getElementById("publishMessage");
+
+            readerLoginForm.addEventListener("submit", async (event) => {
+                event.preventDefault();
+                const message = document.getElementById("readerMessage");
+                try {
+                    await api("/api/auth/reader", {
+                        method: "POST",
+                        body: JSON.stringify({ password: passwordInput.value })
+                    });
+                    passwordInput.value = "";
+                    setSession({ reader: true, admin: false });
+                    await loadArticles();
+                } catch (error) {
+                    showError(message, error);
+                }
+            });
+
+            adminLoginForm.addEventListener("submit", async (event) => {
+                event.preventDefault();
+                const message = document.getElementById("adminLoginMessage");
+                try {
+                    await api("/api/auth/admin", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            username: document.getElementById("adminUsername").value,
+                            password: document.getElementById("adminPassword").value
+                        })
+                    });
+                    document.getElementById("adminPassword").value = "";
+                    await importLegacyArticles();
+                    setSession({ reader: true, admin: true });
+                    await loadArticles();
+                } catch (error) {
+                    showError(message, error);
+                }
+            });
+
+            newsForm.addEventListener("submit", async (event) => {
+                event.preventDefault();
+                const titleInput = document.getElementById("newsTitle");
+                const bodyInput = document.getElementById("newsBody");
+                const title = titleInput.value.trim();
+                const body = bodyInput.value.trim();
+                if (!title || !body) return;
+
+                try {
+                    await api("/api/news", {
+                        method: "POST",
+                        body: JSON.stringify({ title, body })
+                    });
+                    newsForm.reset();
+                    publishMessage.textContent = "Noticia publicada.";
+                    await loadArticles();
+                } catch (error) {
+                    showError(publishMessage, error);
+                }
+            });
+
+            document.getElementById("logoutButton").addEventListener("click", async () => {
+                try {
+                    await api("/api/auth/logout", { method: "POST", body: "{}" });
+                    setSession({ reader: false, admin: false });
+                } catch (error) {
+                    showError(document.getElementById("sessionMessage"), error);
+                }
+            });
+
+            api("/api/auth/status")
+                .then(async (status) => {
+                    setSession(status);
+                    if (status.reader || status.admin) await loadArticles();
+                })
+                .catch((error) => {
+                    showError(document.getElementById("readerMessage"), error);
+                });
+        </script>
+    </body>
+</html>
