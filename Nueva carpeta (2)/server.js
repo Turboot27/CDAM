@@ -471,7 +471,8 @@ async function main() {
     const config = loadConfig();
     const articles = loadArticles();
     const host = process.env.HOST || "127.0.0.1";
-    const port = Number(process.env.PORT || 8765);
+    const PORT = process.env.PORT || 8765;
+    const port = Number(PORT);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT debe ser un puerto válido.");
 
     const server = createServer(config, articles);
